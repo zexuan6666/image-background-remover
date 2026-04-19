@@ -1,30 +1,39 @@
-// Cloudflare Pages Function — handles /api/remove-bg
-// Place this in /functions/api/remove-bg.ts
+// Cloudflare Pages Function — /api/remove-bg
+// Handles background removal via remove.bg API
 
-export const onRequest: PagesFunction = async (context) => {
+interface Env {
+  REMOVE_BG_API_KEY: string;
+}
+
+export const onRequest: PagesFunction<Env> = async (context) => {
   if (context.request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
-      status: 405,
-      headers: { 'Content-Type': 'application/json' },
-    });
+    return jsonResponse({ error: 'Method not allowed' }, 405);
   }
 
   const apiKey = context.env.REMOVE_BG_API_KEY;
   if (!apiKey) {
-    return new Response(
-      JSON.stringify({ error: 'Remove.bg API key not configured' }),
-      { status: 500, headers: { 'Content-Type': 'application/json' } }
+    return jsonResponse(
+      { error: 'Server configuration error. API key not set.' },
+      500
     );
   }
 
   try {
     const formData = await context.request.formData();
-    const imageFile = formData.get('image_file') as File | null;
+    const imageFile = formData.get('image_file');
 
-    if (!imageFile) {
-      return new Response(
-        JSON.stringify({ error: 'No image file provided' }),
-        { status: 400, headers: { 'Content-Type': 'application/json' } }
+    if (!imageFile || !(imageFile instanceof File)) {
+      return jsonResponse(
+        { error: 'No image file provided. Please upload an image.' },
+        400
+      );
+    }
+
+    // Size limit: 10MB
+    if (imageFile.size > 10 * 1024 * 1024) {
+      return jsonResponse(
+        { error: 'File is too large. Maximum size is 10MB.' },
+        413
       );
     }
 
@@ -32,38 +41,62 @@ export const onRequest: PagesFunction = async (context) => {
     const bgFormData = new FormData();
     bgFormData.append('image_file', imageFile);
     bgFormData.append('size', 'auto');
+    bgFormData.append('format', 'png');
 
     const response = await fetch('https://api.remove.bg/v3.0/removebg', {
       method: 'POST',
-      headers: { 'X-Api-Key': apiKey },
+      headers: {
+        'X-Api-Key': apiKey,
+      },
       body: bgFormData,
     });
 
     if (!response.ok) {
       const errorText = await response.text();
       console.error('remove.bg API error:', response.status, errorText);
-      return new Response(
-        JSON.stringify({
-          error: `remove.bg API error: ${response.status}. Please check your API key and try again.`,
-        }),
-        { status: response.status, headers: { 'Content-Type': 'application/json' } }
+
+      if (response.status === 402 || response.status === 429) {
+        return jsonResponse(
+          { error: 'API quota exceeded. Please try again later.' },
+          response.status
+        );
+      }
+
+      if (response.status === 400) {
+        return jsonResponse(
+          { error: 'Unable to process this image. Please try a different image.' },
+          400
+        );
+      }
+
+      return jsonResponse(
+        { error: `Background removal failed (${response.status}). Please try again.` },
+        502
       );
     }
 
-    // Stream the result back (PNG image)
+    // Return the PNG result
     const resultBlob = await response.blob();
     return new Response(resultBlob, {
       status: 200,
       headers: {
         'Content-Type': 'image/png',
-        'Content-Disposition': 'attachment; filename="no-bg.png"',
+        'Cache-Control': 'no-store',
       },
     });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Internal server error';
-    return new Response(JSON.stringify({ error: message }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' },
-    });
+    console.error('remove-bg function error:', message);
+    return jsonResponse({ error: 'Something went wrong. Please try again.' }, 500);
   }
 };
+
+function jsonResponse(data: Record<string, string>, status: number) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: {
+      'Content-Type': 'application/json',
+      'Cache-Control': 'no-store',
+    },
+  });
+}
