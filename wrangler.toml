@@ -1,0 +1,6 @@
+name = "image-background-remover"
+compatibility_date = "2024-01-01"
+pages_build_output_dir = "./out"
+
+[vars]
+# Set REMOVE_BG_API_KEY via: wrangler pages secret put REMOVE_BG_API_KEY
